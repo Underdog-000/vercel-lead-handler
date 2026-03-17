@@ -4,19 +4,21 @@ const api = {
   key: '8456',
   secret: '4e415ea2ed6765f4e8a14f710920035f',
   flow_url: 'https://leadrock.com/URL-GXFQ6-S8GZV',
+  save_url: 'https://leadrock.com/api/v2/lead/save',
 };
 
-function sha1(str) {
-  return crypto.createHash('sha1').update(str).digest('hex');
+function sha1(value) {
+  return crypto.createHash('sha1').update(value).digest('hex');
 }
 
-function toStringValue(value) {
+function str(value) {
   if (value === undefined || value === null) return '';
   return String(value);
 }
 
-function getRequestBody(req) {
+function getBody(req) {
   if (!req.body) return {};
+
   if (typeof req.body === 'string') {
     try {
       return JSON.parse(req.body);
@@ -24,11 +26,22 @@ function getRequestBody(req) {
       return {};
     }
   }
+
   return req.body;
 }
 
+function buildQuery(params) {
+  const searchParams = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    searchParams.append(key, str(value));
+  }
+
+  return searchParams.toString();
+}
+
 function getClientIp(req, body) {
-  if (body.ip) return toStringValue(body.ip);
+  if (body.ip) return str(body.ip).trim();
 
   const xForwardedFor = req.headers['x-forwarded-for'];
   if (typeof xForwardedFor === 'string' && xForwardedFor.trim()) {
@@ -44,76 +57,75 @@ function getClientIp(req, body) {
 }
 
 function getUserAgent(req, body) {
-  if (body.ua) return toStringValue(body.ua);
+  if (body.ua) return str(body.ua).trim();
 
   const userAgent = req.headers['user-agent'];
   if (typeof userAgent === 'string') {
-    return userAgent;
+    return userAgent.trim();
   }
 
   return '';
 }
 
-function buildParams(body, req) {
+function buildBaseParams(body, req) {
   return {
     flow_url: api.flow_url,
-    user_phone: toStringValue(body.phone),
-    user_name: toStringValue(body.name),
-    other: toStringValue(body.other),
+    user_phone: str(body.phone).trim(),
+    user_name: str(body.name).trim(),
+    other: str(body.other).trim(),
     ip: getClientIp(req, body),
     ua: getUserAgent(req, body),
     api_key: api.key,
-    sub1: toStringValue(body.sub1),
-    sub2: toStringValue(body.sub2),
-    sub3: toStringValue(body.sub3),
-    sub4: toStringValue(body.sub4),
-    sub5: toStringValue(body.sub5),
+    sub1: str(body.sub1).trim(),
+    sub2: str(body.sub2).trim(),
+    sub3: str(body.sub3).trim(),
+    sub4: str(body.sub4).trim(),
+    sub5: str(body.sub5).trim(),
     ajax: '1',
   };
 }
 
-function buildQueryString(params) {
-  const searchParams = new URLSearchParams();
+async function requestTrackId(params) {
+  const query = buildQuery(params);
+  const separator = api.flow_url.includes('?') ? '&' : '?';
+  const url = `${api.flow_url}${separator}${query}`;
 
-  for (const [key, value] of Object.entries(params)) {
-    searchParams.append(key, toStringValue(value));
-  }
+  const headers = {};
+  if (params.ua) headers['user-agent'] = params.ua;
 
-  return searchParams.toString();
-}
-
-async function getTrackId(params, userAgent) {
-  const trackQuery = buildQueryString(params);
-  const separator = params.flow_url.includes('?') ? '&' : '?';
-  const trackUrl = `${params.flow_url}${separator}${trackQuery}`;
-
-  const response = await fetch(trackUrl, {
+  const response = await fetch(url, {
     method: 'GET',
     redirect: 'follow',
-    headers: userAgent ? { 'user-agent': userAgent } : {},
+    headers,
   });
 
-  const trackId = await response.text();
-  return trackId.trim();
+  if (!response.ok) {
+    throw new Error(`Track request failed with status ${response.status}`);
+  }
+
+  const trackId = (await response.text()).trim();
+
+  if (!trackId) {
+    throw new Error('Empty track_id received');
+  }
+
+  return trackId;
 }
 
-async function sendLead(params, userAgent) {
-  const url = 'https://leadrock.com/api/v2/lead/save';
-  const body = buildQueryString(params);
-
+async function sendLead(params) {
   const headers = {
     'content-type': 'application/x-www-form-urlencoded',
   };
 
-  if (userAgent) {
-    headers['user-agent'] = userAgent;
+  if (params.ua) {
+    headers['user-agent'] = params.ua;
   }
 
-  const response = await fetch(url, {
+  const response = await fetch(api.save_url, {
     method: 'POST',
-    headers,
-    body,
     redirect: 'follow',
+    headers,
+    body: buildQuery(params),
   });
 
   const rawText = await response.text();
@@ -126,7 +138,7 @@ async function sendLead(params, userAgent) {
   }
 
   return {
-    status: response.status,
+    http_status: response.status,
     ok: response.ok,
     data: parsed,
     raw: rawText,
@@ -136,39 +148,50 @@ async function sendLead(params, userAgent) {
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({
-      ok: false,
-      error: 'Method Not Allowed',
+      success: false,
+      message: 'Method Not Allowed',
     });
   }
 
   try {
-    const body = getRequestBody(req);
+    const body = getBody(req);
 
-    const name = toStringValue(body.name).trim();
-    const phone = toStringValue(body.phone).trim();
+    const name = str(body.name).trim();
+    const phone = str(body.phone).trim();
 
-    if (!phone) {
+    if (!name) {
       return res.status(400).json({
-        ok: false,
-        error: 'Phone is required',
+        success: false,
+        message: 'Name is required',
       });
     }
 
-    const params = buildParams(body, req);
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone is required',
+      });
+    }
 
-    const trackId = await getTrackId(params, params.ua);
+    const params = buildBaseParams(body, req);
+
+    const trackId = await requestTrackId(params);
     params.track_id = trackId;
 
-    const signBase = buildQueryString(params) + api.secret;
-    params.sign = sha1(signBase);
+    const signString = buildQuery(params) + api.secret;
+    params.sign = sha1(signString);
 
-    const partnerResponse = await sendLead(params, params.ua);
+    const partnerResult = await sendLead(params);
 
     return res.status(200).json({
-      ok: true,
+      success: true,
+      message: 'Lead sent',
+      track_id: trackId,
+      partner_status: partnerResult.http_status,
+      partner_response: partnerResult.data,
       sent: {
-        name,
-        phone,
+        name: params.user_name,
+        phone: params.user_phone,
         other: params.other,
         sub1: params.sub1,
         sub2: params.sub2,
@@ -178,14 +201,10 @@ export default async function handler(req, res) {
         ip: params.ip,
         ua: params.ua,
       },
-      track_id: trackId,
-      partner_response: partnerResponse.data,
-      partner_status: partnerResponse.status,
     });
   } catch (error) {
     return res.status(500).json({
-      ok: false,
-      error: 'Internal Server Error',
+      success: false,
       message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
