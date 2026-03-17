@@ -7,13 +7,33 @@ const api = {
   save_url: 'https://leadrock.com/api/v2/lead/save',
 };
 
+// ===== PIXEL CONFIG =====
+const PIXELS = {
+  "YOUR_PIXEL_ID": {
+    token: "YOUR_ACCESS_TOKEN"
+  }
+};
+
+// ===== HELPERS =====
 function sha1(value) {
   return crypto.createHash('sha1').update(value).digest('hex');
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 function str(value) {
   if (value === undefined || value === null) return '';
   return String(value);
+}
+
+function normalizePhone(phone) {
+  return phone.replace(/\D/g, '');
+}
+
+function normalizeName(name) {
+  return name.trim().toLowerCase();
 }
 
 function getBody(req) {
@@ -67,6 +87,7 @@ function getUserAgent(req, body) {
   return '';
 }
 
+// ===== BASE PARAMS =====
 function buildBaseParams(body, req) {
   return {
     flow_url: api.flow_url,
@@ -85,6 +106,7 @@ function buildBaseParams(body, req) {
   };
 }
 
+// ===== TRACK ID =====
 async function requestTrackId(params) {
   const query = buildQuery(params);
   const separator = api.flow_url.includes('?') ? '&' : '?';
@@ -112,6 +134,7 @@ async function requestTrackId(params) {
   return trackId;
 }
 
+// ===== SEND TO PP =====
 async function sendLead(params) {
   const headers = {
     'content-type': 'application/x-www-form-urlencoded',
@@ -145,6 +168,47 @@ async function sendLead(params) {
   };
 }
 
+// ===== SEND TO META =====
+async function sendCAPI({ pixel, token, body, params }) {
+  if (!pixel || !token) return;
+
+  const url = `https://graph.facebook.com/v18.0/${pixel}/events`;
+
+  const phone = normalizePhone(str(body.phone));
+  const name = normalizeName(str(body.name));
+
+  const payload = {
+    data: [
+      {
+        event_name: "Lead",
+        event_time: Math.floor(Date.now() / 1000),
+        action_source: "website",
+
+        user_data: {
+          client_ip_address: params.ip,
+          client_user_agent: params.ua,
+          fbp: body.fbp || "",
+          fbc: body.fbc || "",
+          ph: phone ? sha256(phone) : undefined,
+          fn: name ? sha256(name) : undefined
+        }
+      }
+    ]
+  };
+
+  await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      ...payload,
+      access_token: token
+    })
+  });
+}
+
+// ===== MAIN HANDLER =====
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({
@@ -183,25 +247,29 @@ export default async function handler(req, res) {
 
     const partnerResult = await sendLead(params);
 
+    // ===== CAPI =====
+    if (partnerResult.ok) {
+      const pixel = str(body.pixel).trim();
+      const pixelConfig = PIXELS[pixel];
+
+      if (pixelConfig) {
+        await sendCAPI({
+          pixel,
+          token: pixelConfig.token,
+          body,
+          params
+        });
+      }
+    }
+
     return res.status(200).json({
       success: true,
       message: 'Lead sent',
       track_id: trackId,
       partner_status: partnerResult.http_status,
-      partner_response: partnerResult.data,
-      sent: {
-        name: params.user_name,
-        phone: params.user_phone,
-        other: params.other,
-        sub1: params.sub1,
-        sub2: params.sub2,
-        sub3: params.sub3,
-        sub4: params.sub4,
-        sub5: params.sub5,
-        ip: params.ip,
-        ua: params.ua,
-      },
+      partner_response: partnerResult.data
     });
+
   } catch (error) {
     return res.status(500).json({
       success: false,
