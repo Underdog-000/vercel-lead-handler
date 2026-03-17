@@ -9,8 +9,8 @@ const api = {
 
 // ===== PIXEL CONFIG =====
 const PIXELS = {
-  "YOUR_PIXEL_ID": {
-    token: "YOUR_ACCESS_TOKEN"
+  "123456789012345": {
+    token: process.env.META_TOKEN_123456789012345
   }
 };
 
