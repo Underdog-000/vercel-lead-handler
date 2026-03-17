@@ -169,6 +169,9 @@ async function sendLead(params) {
 }
 
 // ===== SEND TO META =====
+console.log('META DEBUG pixel:', body.pixel);
+console.log('META DEBUG token exists:', !!PIXELS[str(body.pixel).trim()]?.token);
+
 async function sendCAPI({ pixel, token, body, params }) {
   if (!pixel || !token) return;
 
