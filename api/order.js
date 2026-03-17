@@ -9,8 +9,8 @@ const api = {
 
 // ===== PIXEL CONFIG =====
 const PIXELS = {
-  "123456789012345": {
-    token: process.env.META_TOKEN_123456789012345
+  "1490866115735262": {
+    token: process.env.META_TOKEN_1490866115735262
   }
 };
 
