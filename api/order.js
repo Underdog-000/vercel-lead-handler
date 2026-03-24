@@ -42,7 +42,8 @@ function getBody(req) {
   if (typeof req.body === 'string') {
     try {
       return JSON.parse(req.body);
-    } catch {
+    } catch (error) {
+      console.error('BODY PARSE ERROR:', error instanceof Error ? error.message : error);
       return {};
     }
   }
@@ -115,17 +116,24 @@ async function requestTrackId(params) {
   const headers = {};
   if (params.ua) headers['user-agent'] = params.ua;
 
+  console.log('TRACK REQUEST URL:', url);
+  console.log('TRACK REQUEST HEADERS:', headers);
+
   const response = await fetch(url, {
     method: 'GET',
     redirect: 'follow',
     headers,
   });
 
+  console.log('TRACK RESPONSE STATUS:', response.status);
+
   if (!response.ok) {
     throw new Error(`Track request failed with status ${response.status}`);
   }
 
   const trackId = (await response.text()).trim();
+
+  console.log('TRACK RESPONSE BODY:', trackId);
 
   if (!trackId) {
     throw new Error('Empty track_id received');
@@ -144,11 +152,16 @@ async function sendLead(params) {
     headers['user-agent'] = params.ua;
   }
 
+  const bodyToSend = buildQuery(params);
+
+  console.log('PP REQUEST HEADERS:', headers);
+  console.log('PP REQUEST BODY:', bodyToSend);
+
   const response = await fetch(api.save_url, {
     method: 'POST',
     redirect: 'follow',
     headers,
-    body: buildQuery(params),
+    body: bodyToSend,
   });
 
   const rawText = await response.text();
@@ -159,6 +172,9 @@ async function sendLead(params) {
   } catch {
     parsed = rawText;
   }
+
+  console.log('PP RESPONSE STATUS:', response.status);
+  console.log('PP RESPONSE RAW:', rawText);
 
   return {
     http_status: response.status,
@@ -196,7 +212,11 @@ async function sendCAPI({ pixel, token, body, params }) {
     ]
   };
 
-  await fetch(url, {
+  console.log('CAPI REQUEST PIXEL:', pixel);
+  console.log('CAPI TOKEN EXISTS:', !!token);
+  console.log('CAPI REQUEST PAYLOAD:', JSON.stringify(payload, null, 2));
+
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -206,6 +226,11 @@ async function sendCAPI({ pixel, token, body, params }) {
       access_token: token
     })
   });
+
+  const rawText = await response.text();
+
+  console.log('CAPI RESPONSE STATUS:', response.status);
+  console.log('CAPI RESPONSE RAW:', rawText);
 }
 
 // ===== MAIN HANDLER =====
@@ -220,13 +245,41 @@ export default async function handler(req, res) {
   try {
     const body = getBody(req);
 
+    console.log('===== ORDER REQUEST START =====');
+    console.log('REQUEST METHOD:', req.method);
+    console.log('REQUEST URL:', req.url);
+    console.log('INCOMING BODY:', JSON.stringify(body, null, 2));
+    console.log('INCOMING HEADERS:', JSON.stringify({
+      'content-type': req.headers['content-type'],
+      'user-agent': req.headers['user-agent'],
+      'x-forwarded-for': req.headers['x-forwarded-for'],
+      'x-real-ip': req.headers['x-real-ip'],
+    }, null, 2));
+
     console.log('META DEBUG pixel:', body.pixel);
     console.log('META DEBUG token exists:', !!PIXELS[str(body.pixel).trim()]?.token);
 
     const name = str(body.name).trim();
     const phone = str(body.phone).trim();
 
+    console.log('EXTRACTED FIELDS:', JSON.stringify({
+      name,
+      phone,
+      sub1: str(body.sub1).trim(),
+      sub2: str(body.sub2).trim(),
+      sub3: str(body.sub3).trim(),
+      sub4: str(body.sub4).trim(),
+      sub5: str(body.sub5).trim(),
+      ip: str(body.ip).trim(),
+      ua: str(body.ua).trim(),
+      pixel: str(body.pixel).trim(),
+      fbp: str(body.fbp).trim(),
+      fbc: str(body.fbc).trim(),
+      other: str(body.other).trim(),
+    }, null, 2));
+
     if (!name) {
+      console.error('VALIDATION ERROR: Name is required');
       return res.status(400).json({
         success: false,
         message: 'Name is required',
@@ -234,6 +287,7 @@ export default async function handler(req, res) {
     }
 
     if (!phone) {
+      console.error('VALIDATION ERROR: Phone is required');
       return res.status(400).json({
         success: false,
         message: 'Phone is required',
@@ -242,13 +296,24 @@ export default async function handler(req, res) {
 
     const params = buildBaseParams(body, req);
 
+    console.log('BASE PARAMS:', JSON.stringify(params, null, 2));
+
     const trackId = await requestTrackId(params);
     params.track_id = trackId;
 
     const signString = buildQuery(params) + api.secret;
     params.sign = sha1(signString);
 
+    console.log('FINAL PARAMS BEFORE PP:', JSON.stringify(params, null, 2));
+
     const partnerResult = await sendLead(params);
+
+    console.log('PARTNER RESULT:', JSON.stringify({
+      http_status: partnerResult.http_status,
+      ok: partnerResult.ok,
+      data: partnerResult.data,
+      raw: partnerResult.raw,
+    }, null, 2));
 
     // ===== CAPI =====
     if (partnerResult.ok) {
@@ -262,8 +327,14 @@ export default async function handler(req, res) {
           body,
           params
         });
+      } else {
+        console.log('CAPI SKIPPED: No pixel config found for pixel', pixel);
       }
+    } else {
+      console.log('CAPI SKIPPED: Partner response is not OK');
     }
+
+    console.log('===== ORDER REQUEST SUCCESS =====');
 
     return res.status(200).json({
       success: true,
@@ -274,6 +345,12 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
+    console.error('===== ORDER REQUEST ERROR =====');
+    console.error('ERROR MESSAGE:', error instanceof Error ? error.message : error);
+    if (error instanceof Error && error.stack) {
+      console.error('ERROR STACK:', error.stack);
+    }
+
     return res.status(500).json({
       success: false,
       message: error instanceof Error ? error.message : 'Unknown error',
